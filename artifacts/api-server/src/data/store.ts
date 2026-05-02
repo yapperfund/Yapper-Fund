@@ -1,3 +1,15 @@
+import { Pool } from "pg";
+import { logger } from "../lib/logger";
+
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes("localhost") ? false : { rejectUnauthorized: false },
+});
+
+pool.on("error", (err) => {
+  logger.error({ err }, "PostgreSQL pool error");
+});
+
 export interface Fund {
   id: string;
   name: string;
@@ -27,185 +39,220 @@ export interface Investment {
   investedAt: string;
 }
 
-let funds: Fund[] = [
-  {
-    id: "fund-001",
-    name: "Yapper Seed Fund",
-    description: "Dana awal untuk startup teknologi tahap awal di Indonesia",
-    targetAmount: 5000000000,
-    raisedAmount: 2350000000,
-    category: "Teknologi",
-    status: "active",
-    createdAt: "2026-01-10T08:00:00Z",
-    updatedAt: "2026-04-28T10:30:00Z",
-  },
-  {
-    id: "fund-002",
-    name: "Yapper Growth Fund",
-    description: "Dana pertumbuhan untuk UMKM digital siap scale-up",
-    targetAmount: 10000000000,
-    raisedAmount: 10000000000,
-    category: "UMKM",
-    status: "completed",
-    createdAt: "2025-06-01T08:00:00Z",
-    updatedAt: "2025-12-31T23:59:59Z",
-  },
-  {
-    id: "fund-003",
-    name: "Yapper Green Fund",
-    description: "Investasi untuk startup ramah lingkungan dan energi terbarukan",
-    targetAmount: 7500000000,
-    raisedAmount: 500000000,
-    category: "Green Tech",
-    status: "active",
-    createdAt: "2026-03-01T08:00:00Z",
-    updatedAt: "2026-04-30T12:00:00Z",
-  },
-];
-
-let investors: Investor[] = [
-  {
-    id: "inv-001",
-    name: "Budi Santoso",
-    email: "budi@example.com",
-    totalInvested: 500000000,
-    joinedAt: "2026-01-15T09:00:00Z",
-  },
-  {
-    id: "inv-002",
-    name: "Sari Dewi",
-    email: "sari@example.com",
-    totalInvested: 1200000000,
-    joinedAt: "2026-02-01T10:00:00Z",
-  },
-  {
-    id: "inv-003",
-    name: "Ahmad Fauzi",
-    email: "ahmad@example.com",
-    totalInvested: 300000000,
-    joinedAt: "2026-03-10T11:00:00Z",
-  },
-];
-
-let investments: Investment[] = [
-  {
-    id: "txn-001",
-    fundId: "fund-001",
-    investorId: "inv-001",
-    amount: 500000000,
-    note: "Investasi tahap pertama",
-    investedAt: "2026-01-20T09:00:00Z",
-  },
-  {
-    id: "txn-002",
-    fundId: "fund-001",
-    investorId: "inv-002",
-    amount: 1000000000,
-    note: "Lead investor round A",
-    investedAt: "2026-02-05T10:00:00Z",
-  },
-  {
-    id: "txn-003",
-    fundId: "fund-003",
-    investorId: "inv-002",
-    amount: 200000000,
-    note: "Komitmen awal green fund",
-    investedAt: "2026-03-15T08:30:00Z",
-  },
-  {
-    id: "txn-004",
-    fundId: "fund-003",
-    investorId: "inv-003",
-    amount: 300000000,
-    note: "Investasi green energy",
-    investedAt: "2026-04-01T14:00:00Z",
-  },
-];
-
 function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 }
 
-function now(): string {
-  return new Date().toISOString();
+function mapFund(row: Record<string, unknown>): Fund {
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    description: row.description as string,
+    targetAmount: Number(row.target_amount),
+    raisedAmount: Number(row.raised_amount),
+    category: row.category as string,
+    status: row.status as Fund["status"],
+    createdAt: (row.created_at as Date).toISOString(),
+    updatedAt: (row.updated_at as Date).toISOString(),
+  };
+}
+
+function mapInvestor(row: Record<string, unknown>): Investor {
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    email: row.email as string,
+    totalInvested: Number(row.total_invested),
+    joinedAt: (row.joined_at as Date).toISOString(),
+  };
+}
+
+function mapInvestment(row: Record<string, unknown>): Investment {
+  return {
+    id: row.id as string,
+    fundId: row.fund_id as string,
+    investorId: row.investor_id as string,
+    amount: Number(row.amount),
+    note: row.note as string,
+    investedAt: (row.invested_at as Date).toISOString(),
+  };
 }
 
 export const db = {
   funds: {
-    findAll: () => [...funds],
-    findById: (id: string) => funds.find((f) => f.id === id) ?? null,
-    create: (data: Omit<Fund, "id" | "createdAt" | "updatedAt">): Fund => {
-      const fund: Fund = { ...data, id: generateId("fund"), createdAt: now(), updatedAt: now() };
-      funds.push(fund);
-      return fund;
+    findAll: async (filters?: { status?: string; category?: string }): Promise<Fund[]> => {
+      let query = "SELECT * FROM funds WHERE 1=1";
+      const params: string[] = [];
+      if (filters?.status) { params.push(filters.status); query += ` AND status = $${params.length}`; }
+      if (filters?.category) { params.push(filters.category); query += ` AND category = $${params.length}`; }
+      query += " ORDER BY created_at DESC";
+      const { rows } = await pool.query(query, params);
+      return rows.map(mapFund);
     },
-    update: (id: string, data: Partial<Omit<Fund, "id" | "createdAt">>): Fund | null => {
-      const idx = funds.findIndex((f) => f.id === id);
-      if (idx === -1) return null;
-      funds[idx] = { ...funds[idx], ...data, updatedAt: now() };
-      return funds[idx];
+    findById: async (id: string): Promise<Fund | null> => {
+      const { rows } = await pool.query("SELECT * FROM funds WHERE id = $1", [id]);
+      return rows.length ? mapFund(rows[0]) : null;
     },
-    delete: (id: string): boolean => {
-      const before = funds.length;
-      funds = funds.filter((f) => f.id !== id);
-      return funds.length < before;
+    create: async (data: Omit<Fund, "id" | "createdAt" | "updatedAt">): Promise<Fund> => {
+      const id = generateId("fund");
+      const { rows } = await pool.query(
+        `INSERT INTO funds (id, name, description, target_amount, raised_amount, category, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [id, data.name, data.description, data.targetAmount, data.raisedAmount, data.category, data.status]
+      );
+      return mapFund(rows[0]);
+    },
+    update: async (id: string, data: Partial<Omit<Fund, "id" | "createdAt">>): Promise<Fund | null> => {
+      const fields: string[] = [];
+      const params: unknown[] = [];
+      if (data.name) { params.push(data.name); fields.push(`name = $${params.length}`); }
+      if (data.description !== undefined) { params.push(data.description); fields.push(`description = $${params.length}`); }
+      if (data.targetAmount) { params.push(data.targetAmount); fields.push(`target_amount = $${params.length}`); }
+      if (data.raisedAmount !== undefined) { params.push(data.raisedAmount); fields.push(`raised_amount = $${params.length}`); }
+      if (data.category) { params.push(data.category); fields.push(`category = $${params.length}`); }
+      if (data.status) { params.push(data.status); fields.push(`status = $${params.length}`); }
+      if (!fields.length) return db.funds.findById(id);
+      fields.push(`updated_at = NOW()`);
+      params.push(id);
+      const { rows } = await pool.query(
+        `UPDATE funds SET ${fields.join(", ")} WHERE id = $${params.length} RETURNING *`,
+        params
+      );
+      return rows.length ? mapFund(rows[0]) : null;
+    },
+    delete: async (id: string): Promise<boolean> => {
+      const { rowCount } = await pool.query("DELETE FROM funds WHERE id = $1", [id]);
+      return (rowCount ?? 0) > 0;
     },
   },
 
   investors: {
-    findAll: () => [...investors],
-    findById: (id: string) => investors.find((i) => i.id === id) ?? null,
-    create: (data: Omit<Investor, "id" | "totalInvested" | "joinedAt">): Investor => {
-      const investor: Investor = { ...data, id: generateId("inv"), totalInvested: 0, joinedAt: now() };
-      investors.push(investor);
-      return investor;
+    findAll: async (): Promise<Investor[]> => {
+      const { rows } = await pool.query("SELECT * FROM investors ORDER BY joined_at DESC");
+      return rows.map(mapInvestor);
     },
-    update: (id: string, data: Partial<Omit<Investor, "id" | "joinedAt">>): Investor | null => {
-      const idx = investors.findIndex((i) => i.id === id);
-      if (idx === -1) return null;
-      investors[idx] = { ...investors[idx], ...data };
-      return investors[idx];
+    findById: async (id: string): Promise<Investor | null> => {
+      const { rows } = await pool.query("SELECT * FROM investors WHERE id = $1", [id]);
+      return rows.length ? mapInvestor(rows[0]) : null;
     },
-    delete: (id: string): boolean => {
-      const before = investors.length;
-      investors = investors.filter((i) => i.id !== id);
-      return investors.length < before;
+    create: async (data: Pick<Investor, "name" | "email">): Promise<Investor> => {
+      const id = generateId("inv");
+      const { rows } = await pool.query(
+        "INSERT INTO investors (id, name, email) VALUES ($1,$2,$3) RETURNING *",
+        [id, data.name, data.email]
+      );
+      return mapInvestor(rows[0]);
+    },
+    update: async (id: string, data: Partial<Pick<Investor, "name" | "email">>): Promise<Investor | null> => {
+      const fields: string[] = [];
+      const params: unknown[] = [];
+      if (data.name) { params.push(data.name); fields.push(`name = $${params.length}`); }
+      if (data.email) { params.push(data.email); fields.push(`email = $${params.length}`); }
+      if (!fields.length) return db.investors.findById(id);
+      params.push(id);
+      const { rows } = await pool.query(
+        `UPDATE investors SET ${fields.join(", ")} WHERE id = $${params.length} RETURNING *`,
+        params
+      );
+      return rows.length ? mapInvestor(rows[0]) : null;
+    },
+    delete: async (id: string): Promise<boolean> => {
+      const { rowCount } = await pool.query("DELETE FROM investors WHERE id = $1", [id]);
+      return (rowCount ?? 0) > 0;
     },
   },
 
   investments: {
-    findAll: () => [...investments],
-    findByFund: (fundId: string) => investments.filter((i) => i.fundId === fundId),
-    findByInvestor: (investorId: string) => investments.filter((i) => i.investorId === investorId),
-    create: (data: Omit<Investment, "id" | "investedAt">): Investment => {
-      const investment: Investment = { ...data, id: generateId("txn"), investedAt: now() };
-      investments.push(investment);
-      const fund = funds.find((f) => f.id === data.fundId);
-      if (fund) fund.raisedAmount += data.amount;
-      const investor = investors.find((i) => i.id === data.investorId);
-      if (investor) investor.totalInvested += data.amount;
-      return investment;
+    findAll: async (filters?: { fundId?: string; investorId?: string }): Promise<Investment[]> => {
+      let query = "SELECT * FROM investments WHERE 1=1";
+      const params: string[] = [];
+      if (filters?.fundId) { params.push(filters.fundId); query += ` AND fund_id = $${params.length}`; }
+      if (filters?.investorId) { params.push(filters.investorId); query += ` AND investor_id = $${params.length}`; }
+      query += " ORDER BY invested_at DESC";
+      const { rows } = await pool.query(query, params);
+      return rows.map(mapInvestment);
     },
-    delete: (id: string): boolean => {
-      const inv = investments.find((i) => i.id === id);
-      if (!inv) return false;
-      investments = investments.filter((i) => i.id !== id);
-      const fund = funds.find((f) => f.id === inv.fundId);
-      if (fund) fund.raisedAmount -= inv.amount;
-      const investor = investors.find((i) => i.id === inv.investorId);
-      if (investor) investor.totalInvested -= inv.amount;
-      return true;
+    findByFund: async (fundId: string): Promise<Investment[]> => {
+      const { rows } = await pool.query("SELECT * FROM investments WHERE fund_id = $1 ORDER BY invested_at DESC", [fundId]);
+      return rows.map(mapInvestment);
+    },
+    findByInvestor: async (investorId: string): Promise<Investment[]> => {
+      const { rows } = await pool.query("SELECT * FROM investments WHERE investor_id = $1 ORDER BY invested_at DESC", [investorId]);
+      return rows.map(mapInvestment);
+    },
+    create: async (data: Omit<Investment, "id" | "investedAt">): Promise<Investment> => {
+      const id = generateId("txn");
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const { rows } = await client.query(
+          "INSERT INTO investments (id, fund_id, investor_id, amount, note) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+          [id, data.fundId, data.investorId, data.amount, data.note]
+        );
+        await client.query(
+          "UPDATE funds SET raised_amount = raised_amount + $1, updated_at = NOW() WHERE id = $2",
+          [data.amount, data.fundId]
+        );
+        await client.query(
+          "UPDATE investors SET total_invested = total_invested + $1 WHERE id = $2",
+          [data.amount, data.investorId]
+        );
+        await client.query("COMMIT");
+        return mapInvestment(rows[0]);
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    delete: async (id: string): Promise<boolean> => {
+      const { rows } = await pool.query("SELECT * FROM investments WHERE id = $1", [id]);
+      if (!rows.length) return false;
+      const inv = mapInvestment(rows[0]);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("DELETE FROM investments WHERE id = $1", [id]);
+        await client.query(
+          "UPDATE funds SET raised_amount = raised_amount - $1, updated_at = NOW() WHERE id = $2",
+          [inv.amount, inv.fundId]
+        );
+        await client.query(
+          "UPDATE investors SET total_invested = total_invested - $1 WHERE id = $2",
+          [inv.amount, inv.investorId]
+        );
+        await client.query("COMMIT");
+        return true;
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
     },
   },
 
   stats: {
-    summary: () => ({
-      totalFunds: funds.length,
-      activeFunds: funds.filter((f) => f.status === "active").length,
-      totalRaised: funds.reduce((sum, f) => sum + f.raisedAmount, 0),
-      totalTarget: funds.reduce((sum, f) => sum + f.targetAmount, 0),
-      totalInvestors: investors.length,
-      totalTransactions: investments.length,
-    }),
+    summary: async () => {
+      const { rows } = await pool.query(`
+        SELECT
+          (SELECT COUNT(*) FROM funds) AS total_funds,
+          (SELECT COUNT(*) FROM funds WHERE status = 'active') AS active_funds,
+          (SELECT COALESCE(SUM(raised_amount), 0) FROM funds) AS total_raised,
+          (SELECT COALESCE(SUM(target_amount), 0) FROM funds) AS total_target,
+          (SELECT COUNT(*) FROM investors) AS total_investors,
+          (SELECT COUNT(*) FROM investments) AS total_transactions
+      `);
+      const r = rows[0];
+      return {
+        totalFunds: Number(r.total_funds),
+        activeFunds: Number(r.active_funds),
+        totalRaised: Number(r.total_raised),
+        totalTarget: Number(r.total_target),
+        totalInvestors: Number(r.total_investors),
+        totalTransactions: Number(r.total_transactions),
+      };
+    },
   },
 };
